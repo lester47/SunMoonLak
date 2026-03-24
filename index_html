@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>日月潭環湖競跑導覽系統 - MQTT 實境連動版</title>
+    <!-- 載入核心庫：React, Babel, MQTT.js -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.3.7/mqtt.min.js"></script>
+    <!-- 載入 Tailwind CSS 樣式 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap');
+        body { font-family: 'Noto Sans TC', sans-serif; overflow-x: hidden; }
+        
+        /* 自定義進度滑桿 */
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none; height: 30px; width: 30px; border-radius: 50%;
+            background: #2563eb; cursor: pointer; border: 4px solid white;
+            box-shadow: 0 4px 15px rgba(37, 99, 235, 0.4);
+        }
+        
+        .glass-panel { background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(12px); }
+        .transition-image { transition: opacity 0.6s ease-in-out, transform 0.8s ease-in-out; }
+        
+        @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-up { animation: slideUp 0.6s ease-out forwards; }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-900">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useMemo, useEffect } = React;
+
+        const TOTAL_SEGMENTS = 80;
+        const TOTAL_DISTANCE_KM = 29;
+        const SEGMENT_DISTANCE = TOTAL_DISTANCE_KM / TOTAL_SEGMENTS;
+
+        // MQTT 設定 - 預設與 mqttgo.io (EMQX Broker) 完全對接
+        const MQTT_CONFIG = {
+            broker: "wss://broker.emqx.io:8084/mqtt", // 加密 WebSocket 埠位
+            topic: "sml/runner/progress" 
+        };
+
+        const milestones = [
+            { id: 1, segment: 0, name: "01 慈恩塔 (起點)", image: "01-慈恩塔.jpg", history: "1971年完工，蔣公為感念母恩而興建，所有建材皆由船運過湖再由人工扛上山。", geography: "位於海拔954公尺的青龍山頂，塔高46公尺。由此可俯瞰日月潭全景，呈現「青龍連珠」奇觀。", culture: "傳統寶塔式建築，象徵中華文化中的孝親精神。它是環湖競跑最具指標性的出發點。" },
+            { id: 2, segment: 5, name: "02 玄奘寺", image: "02.jpg", history: "1965年落成，奉安玄奘大師靈骨舍利。建築風格採仿唐式設計，莊嚴肅穆。", geography: "座落在青龍山半山腰，前臨潭水、後依群山。您拍的照片中可以看到宏偉的牌樓入口。", culture: "門楣上懸掛「玄奘寺」匾額。這裡不僅是宗教聖地，也是跑者調整呼吸的重要休息點。" },
+            { id: 3, segment: 10, name: "03 玄光碼頭", image: "03-.jpg", history: "曾是暫存玄奘舍利的場所。現在以碼頭邊「阿婆茶葉蛋」聞名，是遊客必訪的地標。", geography: "位於日潭與月潭的交界處，可以近距離觀看湖心的拉魯島（邵族聖地）。", culture: "碼頭旁的「日月潭」石碑是跑者留影的首選。照片中可見熱鬧的碼頭拱門與攤位。" },
+            { id: 4, segment: 15, name: "04 土亭仔步道口", image: "04.jpg", history: "「土亭仔」邵族語意指很多土堆的地方，曾是邵族重要的聚落與狩獵場所。", geography: "路徑兩側有茂密的森林。步道盡頭擁有全台最小、海拔最高的白色燈桿（燈塔）。", culture: "入口的貓頭鷹石像是邵族的守護神。這一段路程充滿原始森林的靜謐感。" },
+            { id: 5, segment: 20, name: "05 伊達邵碼頭", image: "05.jpg", history: "原名「德化社」，為邵族人聚居中心。現在是日月潭最繁榮的文化與商業核心。", geography: "潭區最大的平地聚落。照片中展示了具有邵族風格建築的碼頭廣場與商店街。", culture: "每年農曆八月在此舉行祖靈祭。對於跑者來說，這裡是路程 1/4 的重要補給站。" },
+            { id: 6, segment: 25, name: "06 日月潭纜車站", image: "06.jpg", history: "2009年營運，連結日月潭與九族文化村，為潭區觀光注入現代化與科技感。", geography: "跨越水社大山支脈。站體圓弧鋼構建築在照片中顯得極具現代美學。", culture: "彩色纜車象徵潭區的四季變換。這裡是現代科技與自然美景交織的視覺焦點。" },
+            { id: 7, segment: 30, name: "07 水蛙頭步道 (九蛙)", image: "07.jpg", history: "步道末端的「九蛙疊像」由藝術家沈政瑩設計。現已成為全球關注的水位觀測指標。", geography: "位於內湖仔灣。照片捕捉了步道口的標示，此處是觀察潭水發電與水位變化的最佳視窗。", culture: "「九蛙現身」代表水情變化，是日月潭結合環境教育與文化觀光的成功標誌。" },
+            { id: 8, segment: 35, name: "08 大竹湖 (進水口)", image: "08.jpg", history: "日治時期為了發電，修築15公里的引水隧道將濁水溪水引入潭中，是重要工程遺跡。", geography: "潭水湧出處形成了「湧泉」景觀，同時發展出豐富的溼地生態。照片可見其自然綠意。", culture: "見證了日月潭從天然湖泊轉變為水利發電發電重鎮的歷史進程。" },
+            { id: 9, segment: 40, name: "09 文武廟", image: "09.jpg", history: "1938年因水位上升而遷移。1969年重建為現今壯闊規模。照片可見其華麗的紅色牌樓。", geography: "座落在潭北山腰，氣勢磅礡。擁有著名的「年梯步道」，每階代表一年中的一天。", culture: "主祀孔子與關公。其北朝宮廷式建築藝術是環湖北側最震撼的人文景觀。路程過半！" },
+            { id: 10, segment: 45, name: "10 雲品/萬麗酒店一帶", image: "10.jpg", history: "此區是日月潭北岸觀光發展重心。照片中展現了現代化的高級酒店與寧靜湖景的共存。", geography: "公路在此處呈現平緩弧線，視野開闊。您可以遠眺南岸的山脈與出發點慈恩塔。", culture: "代表了日月潭與國際觀光接軌的面貌。對跑者而言，這裡是身心最能放鬆的一段平路。" },
+            { id: 11, segment: 50, name: "11 朝霧碼頭", image: "11.jpg", history: "曾是重要的交通與貨運碼頭。因清晨霧氣繚繞展現出如夢似幻的「朝霧」美景而得名。", geography: "面向東方，是觀賞日出的最佳點。照片中可見大門牌樓與開闊的泊船區。", culture: "每年「萬人橫渡日月潭」活動的正式下水點。象徵著挑戰自我的勇氣。" },
+            { id: 12, segment: 55, name: "12 水社碼頭", image: "12.jpg", history: "日月潭最早開發的商業據點，也是整個環湖地區的交通與服務核心中心。", geography: "地勢平坦。照片展示了熱鬧的石牌樓入口，周圍飯店林立，是補給最完善的地方。", culture: "這裡匯集了潭區的活力。跑者在此通常能獲得最多遊客的加油聲與鼓勵。" },
+            { id: 13, segment: 60, name: "13 向山遊客中心", image: "13.jpg", history: "由日本建築師團紀彥設計。清水模結構與湖水融合，本身就是一件巨大的藝術品。", geography: "雙手環抱湖水的流線型設計。照片中的現代建築在藍天與無邊際水池襯托下極具禪意。", culture: "這裡是現代美學與自然生態共存的經典。路程已達 3/4，跑者在此能感受和諧氛圍。" },
+            { id: 14, segment: 65, name: "14 向山眺望平台", image: "14.jpg", history: "2014年啟用的懸臂式平台。透過創新的鋼構結構，讓跑者的視角能延伸至湖心上方。", geography: "懸空於湖面約10公尺處。照片捕捉了平台入口，這裡能直對拉魯島，形成視覺中軸線。", culture: "站在平台上如同站在湖中心。這裡是跑者與潭水「深度對話」的絕佳時刻。" },
+            { id: 15, segment: 70, name: "15 月牙灣 (月潭段)", image: "15.jpg", history: "這裡是相對寧靜的私房景點。照片展現了迷人的半月型弧線與清澈見底的潭水。", geography: "湖岸形狀如新月。此段車流量極少，是划船與 SUP 立槳愛好者的天堂。", culture: "遠離喧囂。在競跑後期，月牙灣的寧靜能給予跑者最溫柔的心靈支持。" },
+            { id: 16, segment: 75, name: "16 頭社壩附近", image: "16.jpg", history: "區隔日月潭主潭與頭社盆地的重要堤壩。照片可見寬廣的壩頂草皮與遠處的山脈。", geography: "地勢開闊，视野極佳。您可以同時欣賞到廣闊潭面與集集大山的翠綠山景。", culture: "這是環湖最後一塊拼圖。看到這片美麗草坡，代表挑戰即將圓滿完成，榮耀就在前方！" },
+            { id: 17, segment: 80, name: "17 回到終點：慈恩塔", image: "17.jpg", history: "跑者完成環湖 29 公里的壯舉，最後回到出發點的塔前廣場領取獎牌。", geography: "夕陽西下時的慈恩塔，是全潭最寧靜莊嚴的時刻。", culture: "代表了堅持到底、永不放棄的精神。恭喜你完成了這場跨學科的跑步與科技之旅！" }
+        ];
+
+        function App() {
+            const [segment, setSegment] = useState(0);
+            const [tab, setTab] = useState('info');
+            const [mqttStatus, setMqttStatus] = useState("connecting");
+            const [showSettings, setShowSettings] = useState(false);
+
+            // MQTT 核心連線邏輯
+            useEffect(() => {
+                const client = mqtt.connect(MQTT_CONFIG.broker, {
+                    clientId: 'sml_client_' + Math.random().toString(16).substr(2, 8),
+                    clean: true,
+                    connectTimeout: 4000,
+                    reconnectPeriod: 1000,
+                });
+
+                client.on("connect", () => {
+                    setMqttStatus("connected");
+                    client.subscribe(MQTT_CONFIG.topic);
+                    console.log("MQTT 連線成功，訂閱主題：", MQTT_CONFIG.topic);
+                });
+
+                client.on("message", (topic, message) => {
+                    const value = parseInt(message.toString());
+                    if (!isNaN(value)) {
+                        setSegment(Math.max(0, Math.min(80, value)));
+                    }
+                });
+
+                client.on("error", (err) => {
+                    console.error("MQTT 連線錯誤：", err);
+                    setMqttStatus("error");
+                });
+
+                client.on("close", () => setMqttStatus("offline"));
+
+                return () => client.end();
+            }, []);
+
+            const data = useMemo(() => {
+                const idx = Math.floor(segment / 5);
+                return milestones[idx] || milestones[milestones.length - 1];
+            }, [segment]);
+
+            const dist = (segment * SEGMENT_DISTANCE).toFixed(2);
+            const percent = Math.round((segment / TOTAL_SEGMENTS) * 100);
+
+            return (
+                <div className="max-w-6xl mx-auto p-4 lg:p-12 min-h-screen flex flex-col">
+                    {/* Header: 標題與 MQTT 狀態 */}
+                    <div className="bg-white rounded-[3rem] shadow-2xl p-10 mb-12 flex flex-col md:flex-row justify-between items-center border border-slate-100 glass-panel">
+                        <div className="flex items-center gap-8">
+                            <div className="bg-gradient-to-br from-blue-700 to-indigo-600 p-5 rounded-[2rem] text-white shadow-xl shadow-blue-200">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
+                            </div>
+                            <div>
+                                <h1 className="text-4xl font-black text-slate-800 tracking-tight italic">日月潭環湖競跑導覽</h1>
+                                <div className="flex items-center gap-3 mt-2">
+                                    <div className={`w-3 h-3 rounded-full ${mqttStatus === 'connected' ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`}></div>
+                                    <p className="text-slate-400 text-sm font-black uppercase tracking-widest">
+                                        MQTT: {mqttStatus === 'connected' ? '已對接 mqttgo.io' : '連線中...'}
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex gap-8 mt-8 md:mt-0">
+                            <div className="bg-blue-50 px-10 py-5 rounded-[2rem] text-center border border-blue-100">
+                                <p className="text-[10px] text-blue-400 font-black uppercase mb-1 tracking-widest">SEGMENT</p>
+                                <p className="text-4xl font-black text-blue-700">{segment} <span className="text-sm opacity-30">/ 80</span></p>
+                            </div>
+                            <button onClick={() => setShowSettings(!showSettings)} className="bg-slate-100 p-5 rounded-[2rem] text-slate-400 hover:text-blue-600 transition-all hover:rotate-90">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* MQTT 參數說明板 */}
+                    {showSettings && (
+                        <div className="bg-slate-800 text-white p-10 rounded-[3rem] mb-12 shadow-2xl animate-up">
+                            <div className="flex items-center gap-4 mb-8">
+                                <div className="p-3 bg-yellow-400 rounded-2xl text-slate-900 font-black">MQTTGO.IO 指南</div>
+                                <p className="text-slate-400 font-bold tracking-widest">請對照下方參數發送數據</p>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 text-sm">
+                                <div className="bg-slate-900 p-6 rounded-2xl border border-slate-700">
+                                    <p className="text-blue-400 font-black mb-3 tracking-widest uppercase">MQTT Broker</p>
+                                    <p className="font-mono text-xl">broker.emqx.io</p>
+                                    <p className="text-slate-500 mt-2 italic">Web: 8083 (WS) / 8084 (WSS)</p>
+                                </div>
+                                <div className="bg-slate-900 p-6 rounded-2xl border border-slate-700">
+                                    <p className="text-yellow-400 font-black mb-3 tracking-widest uppercase">Target Topic (發送主題)</p>
+                                    <p className="font-mono text-2xl text-white">{MQTT_CONFIG.topic}</p>
+                                    <p className="text-slate-500 mt-2">Payload: 發送數字 0 ~ 80</p>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 flex-grow">
+                        {/* 實景展示 */}
+                        <div className="lg:col-span-7 space-y-10">
+                            <div className="bg-white rounded-[4rem] shadow-2xl overflow-hidden border-[15px] border-white relative aspect-video group">
+                                <img 
+                                    key={data.image}
+                                    src={data.image} 
+                                    alt={data.name} 
+                                    className="w-full h-full object-cover transition-transform duration-1000 group-hover:scale-110 transition-image"
+                                />
+                                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/10 to-transparent pointer-events-none" />
+                                <div className="absolute bottom-12 left-12 text-white animate-up">
+                                    <span className="bg-blue-600 px-6 py-2 rounded-full text-sm font-black uppercase tracking-[0.3em] mb-4 inline-block shadow-2xl">Point {data.id}</span>
+                                    <h2 className="text-6xl font-black drop-shadow-2xl tracking-tighter">{data.name}</h2>
+                                </div>
+                            </div>
+
+                            {/* 手動/自動控制面板 */}
+                            <div className="bg-white p-12 rounded-[3.5rem] shadow-xl border border-slate-100 relative overflow-hidden">
+                                <div className="absolute top-0 right-0 w-40 h-40 bg-blue-50 rounded-full -mr-20 -mt-20 opacity-60" />
+                                <div className="relative z-10">
+                                    <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-10 flex items-center gap-3">
+                                        <div className="w-3 h-3 bg-blue-500 rounded-full animate-ping" />
+                                        訊號監聽中... (Topic: {MQTT_CONFIG.topic})
+                                    </h3>
+                                    <div className="flex items-center gap-10 mb-12">
+                                        <button onClick={() => setSegment(s => Math.max(0, s - 1))} className="p-6 bg-slate-100 rounded-[2rem] hover:bg-blue-600 hover:text-white transition-all shadow-lg active:scale-90">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                                        </button>
+                                        <div className="flex-grow group relative h-4 bg-slate-100 rounded-full p-1 border border-slate-50">
+                                            <div className="h-full bg-gradient-to-r from-blue-600 to-indigo-500 rounded-full transition-all duration-300 shadow-[0_0_20px_rgba(37,99,235,0.4)]" style={{width: percent + '%'}}></div>
+                                            <input 
+                                                type="range" min="0" max="80" value={segment} 
+                                                onChange={(e) => setSegment(parseInt(e.target.value))}
+                                                className="absolute top-0 left-0 w-full h-full opacity-0 cursor-pointer z-10"
+                                            />
+                                        </div>
+                                        <button onClick={() => setSegment(s => Math.min(80, s + 1))} className="p-6 bg-slate-100 rounded-[2rem] hover:bg-blue-600 hover:text-white transition-all shadow-lg active:scale-90">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                                        </button>
+                                    </div>
+                                    <div className="grid grid-cols-5 gap-4">
+                                        {[0, 20, 40, 60, 80].map(s => (
+                                            <button key={s} onClick={() => setSegment(s)} className={`py-5 rounded-[1.5rem] font-black text-xs transition-all border-2 ${segment === s ? 'bg-slate-900 text-white border-slate-900 shadow-2xl scale-110' : 'bg-white text-slate-400 border-slate-100 hover:border-blue-300'}`}>
+                                                {s === 0 ? 'START' : s === 80 ? 'GOAL' : s + ' SEG'}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* 右側：詳解板 */}
+                        <div className="lg:col-span-5 flex flex-col">
+                            <div className="bg-white rounded-[3.5rem] shadow-2xl border border-slate-100 overflow-hidden flex flex-col h-full glass-panel">
+                                <div className="p-6 bg-slate-50/50 m-8 rounded-[2.5rem] flex gap-4 border border-slate-100/50">
+                                    <button onClick={() => setTab('info')} className={`flex-1 py-5 text-md font-black rounded-[2rem] transition-all ${tab === 'info' ? 'bg-white text-blue-600 shadow-xl ring-1 ring-blue-50' : 'text-slate-400 hover:text-slate-600'}`}>景點導覽</button>
+                                    <button onClick={() => setTab('data')} className={`flex-1 py-5 text-md font-black rounded-[2rem] transition-all ${tab === 'data' ? 'bg-white text-emerald-600 shadow-xl ring-1 ring-emerald-50' : 'text-slate-400 hover:text-slate-600'}`}>挑戰數據</button>
+                                </div>
+                                
+                                <div className="p-12 flex-grow overflow-y-auto">
+                                    {tab === 'info' ? (
+                                        <div className="space-y-12 animate-up">
+                                            <div className="relative pl-12">
+                                                <div className="absolute left-0 top-1 w-8 h-8 bg-blue-100 text-blue-600 rounded-2xl flex items-center justify-center font-black text-[14px]">1</div>
+                                                <h4 className="text-[11px] font-black text-blue-500 uppercase tracking-[0.2em] mb-3">歷史人文 History</h4>
+                                                <p className="font-bold text-slate-700 leading-relaxed text-xl tracking-tight italic">「{data.history}」</p>
+                                            </div>
+                                            <div className="relative pl-12">
+                                                <div className="absolute left-0 top-1 w-8 h-8 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center font-black text-[14px]">2</div>
+                                                <h4 className="text-[11px] font-black text-emerald-500 uppercase tracking-[0.2em] mb-3">地理環境 Geography</h4>
+                                                <p className="font-bold text-slate-700 leading-relaxed text-xl tracking-tight">{data.geography}</p>
+                                            </div>
+                                            <div className="relative pl-12">
+                                                <div className="absolute left-0 top-1 w-8 h-8 bg-amber-100 text-amber-600 rounded-2xl flex items-center justify-center font-black text-[14px]">3</div>
+                                                <h4 className="text-[11px] font-black text-amber-500 uppercase tracking-[0.2em] mb-3">文化特色 Culture</h4>
+                                                <p className="font-bold text-slate-700 leading-relaxed text-xl tracking-tight">{data.culture}</p>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-10 animate-up text-center">
+                                            <div className="bg-slate-900 rounded-[3rem] p-12 text-white relative overflow-hidden shadow-2xl">
+                                                <h4 className="text-[11px] text-slate-500 font-black uppercase mb-10 tracking-[0.4em]">MISSION PROGRESS</h4>
+                                                <div className="flex justify-center items-end mb-10">
+                                                    <span className="text-8xl font-black tracking-tighter">{percent}<span className="text-3xl opacity-30 ml-2">%</span></span>
+                                                </div>
+                                                <div className="mb-8">
+                                                    <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest mb-2 opacity-50">已跑里程總長 29KM</p>
+                                                    <p className="text-5xl font-black text-blue-400">{dist} <span className="text-lg opacity-60">km</span></p>
+                                                </div>
+                                                <div className="w-full h-5 bg-white/10 rounded-full overflow-hidden p-1 border border-white/5">
+                                                    <div className="h-full bg-gradient-to-r from-blue-500 via-indigo-500 to-emerald-400 rounded-full transition-all duration-1000 shadow-[0_0_30px_rgba(59,130,246,0.7)]" style={{width: percent + '%'}}></div>
+                                                </div>
+                                            </div>
+                                            <div className="bg-blue-50 p-10 rounded-[3rem] border border-blue-100 flex justify-between items-center shadow-lg transition-all hover:bg-blue-100">
+                                                <div className="text-left">
+                                                    <p className="text-[11px] text-blue-400 font-black uppercase mb-2 tracking-widest">剩餘路程</p>
+                                                    <p className="text-5xl font-black text-blue-800">{(TOTAL_DISTANCE_KM - parseFloat(dist)).toFixed(2)} <span className="text-sm font-bold opacity-40 tracking-normal">KM</span></p>
+                                                </div>
+                                                <div className="bg-white p-6 rounded-[2rem] text-blue-400 shadow-xl border border-blue-50">
+                                                    <svg xmlns="http://www.w3.org/2000/svg" width="50" height="50" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55.45 1 1 1h2c.55 0 1-.45 1-1v-2.34c3.23-.44 5.34-3.1 5-6.16a5.5 5.5 0 0 0-11 0c-.34 3.06 1.77 5.72 5 6.16Z"/></svg>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                                
+                                <div className="bg-slate-900 p-10 flex justify-between items-center text-white border-t border-white/5">
+                                    <div className="animate-pulse">
+                                        <p className="text-[11px] text-slate-500 uppercase font-black tracking-[0.3em] mb-2">NEXT CHECKPOINT</p>
+                                        <p className="text-2xl font-black text-blue-400 tracking-tight">{milestones[Math.floor(segment / 5) + 1]?.name || '衝刺！完成挑戰！'}</p>
+                                    </div>
+                                    <div className="w-16 h-16 rounded-[1.5rem] bg-white/5 flex items-center justify-center border border-white/5">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-blue-500"><path d="m9 18 6-6-6-6"/></svg>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <footer className="text-center py-24 text-slate-400 text-xs font-black border-t border-slate-200 mt-24 opacity-30 tracking-[1em] uppercase">
+                        Sun Moon Lake Runner Project · 2026 · IOT Integration
+                    </footer>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
