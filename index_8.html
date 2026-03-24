@@ -1,1 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>日月潭環湖競跑導覽系統 - 16:9 劇院互動版</title>
+    <!-- 載入核心庫 -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.3.7/mqtt.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap');
+        body { font-family: 'Noto Sans TC', sans-serif; overflow-x: hidden; background-color: #f8fafc; }
+        
+        /* 隱藏標準拉桿，自定義樣式 */
+        input[type=range] { -webkit-appearance: none; background: transparent; }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none; height: 24px; width: 24px; border-radius: 50%;
+            background: #2563eb; cursor: pointer; border: 3px solid white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2); margin-top: -8px;
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%; height: 8px; cursor: pointer; background: #e2e8f0; border-radius: 4px;
+        }
+        
+        .glass-header { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); }
+        .image-glow { box-shadow: 0 20px 50px -12px rgba(0, 0, 0, 0.25); }
+        .transition-all-800 { transition: all 0.8s cubic-bezier(0.4, 0, 0.2, 1); }
+        
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .animate-fade { animation: fadeIn 1s ease-out; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
 
+    <script type="text/babel">
+        const { useState, useMemo, useEffect, useRef } = React;
+
+        const TOTAL_SEGMENTS = 80;
+        const TOTAL_DISTANCE_KM = 29;
+        const SEGMENT_DISTANCE = TOTAL_DISTANCE_KM / TOTAL_SEGMENTS;
+
+        const MQTT_CONFIG = {
+            broker: "wss://mqttgo.io:8084/mqtt", 
+            topic: "sml/runner/progress",        
+            originalId: "MQTTGO-3125212715"      
+        };
+
+        const milestones = [
+            { id: 1, segment: 0, name: "01 慈恩塔 (起點)", image: "01-慈恩塔.jpg", history: "1971年完工，蔣公感念母恩興建。塔頂海拔達1000公尺。", geography: "位於青龍山頂，海拔954公尺，塔高46公尺。", culture: "環湖競跑極具指標性的起點，象徵孝親精神。" },
+            { id: 2, segment: 5, name: "02 玄奘寺", image: "02.jpg", history: "1965年落成，奉安玄奘大師靈骨舍利。", geography: "座落在青龍山半山腰，前臨潭水、後依群山。", culture: "仿唐式設計，莊嚴肅穆。跑者調整呼吸的休息點。" },
+            { id: 3, segment: 10, name: "03 玄光碼頭", image: "03-.jpg", history: "曾是暫存玄奘舍利的場所，以阿婆茶葉蛋聞名。", geography: "日潭與月潭交界處，可觀看湖心拉魯島。", culture: "碼頭旁的日月潭石碑是跑者留影首選。" },
+            { id: 4, segment: 15, name: "04 土亭仔步道口", image: "04.jpg", history: "邵族語意指很多土堆的地方，曾是重要聚落。", geography: "路徑兩側有茂密森林，盡頭有全台最小燈桿。", culture: "入口貓頭鷹石像是邵族守護神，充滿靜謐感。" },
+            { id: 5, segment: 20, name: "05 伊達邵碼頭", image: "05.jpg", history: "原名德化社，邵族人聚居中心與文化商圈。", geography: "潭區最大的平地聚落，補給最豐富的地段。", culture: "農曆八月舉行祖靈祭，環湖路程 1/4 處。" },
+            { id: 6, segment: 25, name: "06 日月潭纜車站", image: "06.jpg", history: "2009年營運，連結日月潭與九族文化村。", geography: "跨越水社大山支脈，站體結構極具現代美學。", culture: "彩色纜車象徵潭區四季變換，視覺焦點。" },
+            { id: 7, segment: 30, name: "07 水蛙頭步道 (九蛙)", image: "07.jpg", history: "九蛙疊像由沈政瑩設計，關注水位觀測指標。", geography: "位於內湖仔灣，觀察潭水發電變化的最佳窗戶。", culture: "九蛙現身代表水情變化，環境教育成功標誌。" },
+            { id: 8, segment: 35, name: "08 大竹湖 (進水口)", image: "08.jpg", history: "日治時期引水隧道將濁水溪引入，重要遺跡。", geography: "潭水湧出處形成湧泉，擁有豐富溼地生態。", culture: "見證日月潭轉變為水利發電重鎮的歷史。" },
+            { id: 9, segment: 40, name: "09 文武廟", image: "09.jpg", history: "1969年重建為現今規模。紅色牌樓壯闊華麗。", geography: "座落在潭北山腰，氣勢磅礡。擁有年梯步道。", culture: "北朝宮廷式建築。路程過半的重要里程碑。" },
+            { id: 10, segment: 45, name: "10 雲品/萬麗酒店一帶", image: "10.jpg", history: "北岸觀光發展重心。現代高級酒店林立。", geography: "公路呈現平緩弧線，視野開闊，可遠眺慈恩塔。", culture: "國際觀光接軌面貌。身心最能放鬆的一段平路。" },
+            { id: 11, segment: 50, name: "11 朝霧碼頭", image: "11.jpg", history: "曾是交通中心。因清晨霧氣繚繞美景得名。", geography: "面向東方，是觀賞日出的最佳點與泊船區。", culture: "萬人橫渡日月潭正式下水點，象徵自我挑戰。" },
+            { id: 12, segment: 55, name: "12 水社碼頭", image: "12.jpg", history: "最早開發的商業據點，環湖地區交通服務核心。", geography: "地勢平坦，飯店林立，補給與交通最完善。", culture: "匯集潭區活力，跑者獲得最多加油聲之處。" },
+            { id: 13, segment: 60, name: "13 向山遊客中心", image: "13.jpg", history: "日本建築師團紀彥設計。清水模結構藝術品。", geography: "雙手環抱湖水的流線型設計。藍天水池極具禪意。", culture: "現代美學與自然共存。路程已達 3/4 處。" },
+            { id: 14, segment: 65, name: "14 向山眺望平台", image: "14.jpg", history: "2014年啟用。創新鋼構懸臂式延伸平台。", geography: "懸空湖面10公尺，直對拉魯島視覺中軸線。", culture: "如同站在湖中心。跑者與潭水深度對話時刻。" },
+            { id: 15, segment: 70, name: "15 月牙灣 (月潭段)", image: "15.jpg", history: "相對寧靜的私房景點。展現迷人半月弧線。", geography: "湖岸形狀如新月。車流極少，水上活動天堂。", culture: "遠離喧囂。後期給予跑者最溫柔的心靈支持。" },
+            { id: 16, segment: 75, name: "16 頭社壩附近", image: "16.jpg", history: "區隔主潭與頭社盆地重要堤壩。壩頂草皮寬廣。", geography: "地勢開闊，可同時欣賞潭面與集集大山美景。", culture: "最後一塊拼圖。看到草坡代表挑戰即將完成。" },
+            { id: 17, segment: 80, name: "17 回到終點：慈恩塔", image: "17.jpg", history: "完成環湖 29 公里壯舉，回到塔前廣場。", geography: "塔頂海拔 1000M。全潭最寧靜莊嚴的時刻。", culture: "堅持到底、永不放棄。恭喜完成跨學科挑戰！" }
+        ];
+
+        function App() {
+            const [segment, setSegment] = useState(0);
+            const [mqttStatus, setMqttStatus] = useState("connecting");
+            const [showTools, setShowTools] = useState(false);
+            const [lastMsg, setLastMsg] = useState("-");
+            const mqttClient = useRef(null);
+
+            useEffect(() => {
+                const browserId = MQTT_CONFIG.originalId + "-BROWSER-" + Math.random().toString(16).substring(2, 6);
+                const client = mqtt.connect(MQTT_CONFIG.broker, {
+                    clientId: browserId, clean: true, connectTimeout: 4000, reconnectPeriod: 1000,
+                });
+
+                client.on("connect", () => {
+                    setMqttStatus("connected");
+                    client.subscribe(MQTT_CONFIG.topic);
+                });
+
+                client.on("message", (t, m) => {
+                    const val = parseInt(m.toString().trim());
+                    setLastMsg(m.toString());
+                    if (!isNaN(val)) setSegment(Math.max(0, Math.min(80, val)));
+                });
+
+                client.on("error", () => setMqttStatus("error"));
+                client.on("close", () => setMqttStatus("offline"));
+                mqttClient.current = client;
+                return () => client.end();
+            }, []);
+
+            const sendTest = () => {
+                if (mqttClient.current && mqttStatus === 'connected') {
+                    const testVal = Math.floor(Math.random() * 81);
+                    mqttClient.current.publish(MQTT_CONFIG.topic, testVal.toString());
+                }
+            };
+
+            const data = useMemo(() => {
+                const idx = Math.floor(segment / 5);
+                return milestones[idx] || milestones[milestones.length - 1];
+            }, [segment]);
+
+            const dist = (segment * SEGMENT_DISTANCE).toFixed(2);
+            const percent = Math.round((segment / TOTAL_SEGMENTS) * 100);
+
+            return (
+                <div className="flex flex-col min-h-screen">
+                    {/* Slim Header */}
+                    <header className="glass-header sticky top-0 z-50 border-b border-slate-200 px-6 py-3 flex justify-between items-center shadow-sm">
+                        <div className="flex items-center gap-4">
+                            <div className="bg-blue-600 p-2 rounded-lg text-white">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
+                            </div>
+                            <h1 className="text-lg font-black text-slate-800 tracking-tight">日月潭環湖競跑導覽 <span className="text-slate-300 font-normal ml-2">IOT PRO</span></h1>
+                        </div>
+                        <div className="flex items-center gap-6">
+                            <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-full border border-slate-100">
+                                <div className={`w-2.5 h-2.5 rounded-full ${mqttStatus === 'connected' ? 'bg-emerald-500 shadow-lg' : 'bg-red-500 status-pulse'}`}></div>
+                                <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">MQTTGO.IO</span>
+                            </div>
+                            <button onClick={() => setShowTools(!showTools)} className={`p-2 rounded-full transition-all ${showTools ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-100'}`}>
+                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                            </button>
+                        </div>
+                    </header>
+
+                    <main className="flex-grow flex flex-col items-center px-4 md:px-8 py-6 w-full max-w-screen-2xl mx-auto overflow-hidden">
+                        
+                        {/* MQTT Tools Panel */}
+                        {showTools && (
+                            <div className="w-full bg-slate-900 text-white rounded-3xl p-6 mb-8 flex justify-between items-center animate-fade border border-slate-700 shadow-2xl">
+                                <div className="flex gap-10 text-xs">
+                                    <div><p className="text-blue-400 font-bold mb-1 uppercase">Broker</p><p className="font-mono text-sm">mqttgo.io</p></div>
+                                    <div><p className="text-yellow-400 font-bold mb-1 uppercase">ClientID</p><p className="font-mono text-sm">{MQTT_CONFIG.originalId}</p></div>
+                                    <div><p className="text-pink-400 font-bold mb-1 uppercase">Topic</p><p className="font-mono text-sm font-bold">{MQTT_CONFIG.topic}</p></div>
+                                    <div className="border-l border-slate-700 pl-10"><p className="text-emerald-400 font-bold mb-1 uppercase">Last Recv</p><p className="font-mono text-sm">{lastMsg}</p></div>
+                                </div>
+                                <button onClick={sendTest} className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-3 rounded-2xl font-black text-sm transition-all shadow-lg active:scale-95 flex items-center gap-2">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                                    發送測試回測訊號
+                                </button>
+                            </div>
+                        )}
+
+                        {/* Large Image Section (16:9 Cinema View) */}
+                        <div className="w-full relative aspect-video rounded-[3rem] overflow-hidden image-glow bg-black animate-fade group border-[10px] border-white ring-1 ring-slate-200">
+                            <img 
+                                key={data.image}
+                                src={data.image} 
+                                alt={data.name} 
+                                className="w-full h-full object-cover transition-transform duration-1000 group-hover:scale-105"
+                            />
+                            {/* Overlay Vignette */}
+                            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent pointer-events-none" />
+                            
+                            {/* Milestone Title - Floating Bottom Left */}
+                            <div className="absolute bottom-10 left-12 text-white">
+                                <div className="flex items-center gap-4 mb-4">
+                                    <span className="bg-blue-600 px-5 py-1.5 rounded-full text-xs font-black uppercase tracking-widest shadow-xl border border-blue-400">Point {data.id}</span>
+                                    <span className="bg-white/20 backdrop-blur-md px-5 py-1.5 rounded-full text-xs font-bold tracking-widest">SEG {segment}/80</span>
+                                </div>
+                                <h2 className="text-7xl font-black drop-shadow-2xl tracking-tighter leading-tight">{data.name}</h2>
+                            </div>
+
+                            {/* Live Runner Badge */}
+                            <div className="absolute top-10 right-12 bg-white/10 backdrop-blur-xl border border-white/20 p-4 rounded-3xl flex items-center gap-4 text-white shadow-2xl">
+                                <div className="text-right">
+                                    <p className="text-[10px] font-black uppercase opacity-60 tracking-widest">Live Distance</p>
+                                    <p className="text-3xl font-black">{dist} <span className="text-sm">KM</span></p>
+                                </div>
+                                <div className="w-12 h-12 bg-emerald-500 rounded-2xl flex items-center justify-center shadow-lg">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Control Bar - Under Image */}
+                        <div className="w-full mt-10 bg-white/50 border border-slate-200 p-8 rounded-[2.5rem] flex items-center gap-12 shadow-sm">
+                            <div className="flex-grow flex items-center gap-6">
+                                <span className="text-xs font-black text-slate-400 uppercase tracking-tighter">Progress</span>
+                                <div className="flex-grow relative pt-1">
+                                    <div className="overflow-hidden h-2 mb-4 text-xs flex rounded bg-slate-200">
+                                        <div style={{ width: percent + "%" }} className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-blue-600 transition-all duration-500"></div>
+                                    </div>
+                                    <input 
+                                        type="range" min="0" max="80" value={segment} 
+                                        onChange={(e) => setSegment(parseInt(e.target.value))}
+                                        className="absolute top-0 w-full opacity-0 cursor-pointer h-2 z-10"
+                                    />
+                                </div>
+                                <span className="text-xl font-black text-blue-700 min-w-[60px]">{percent}%</span>
+                            </div>
+                            <div className="flex gap-3">
+                                {[0, 20, 40, 60, 80].map(s => (
+                                    <button key={s} onClick={() => setSegment(s)} className={`px-4 py-2 rounded-xl text-[10px] font-black border transition-all ${segment === s ? 'bg-slate-900 text-white border-slate-900 shadow-lg' : 'bg-white text-slate-400 border-slate-100 hover:border-blue-300'}`}>
+                                        {s === 0 ? 'START' : s === 80 ? 'GOAL' : s + ' SEG'}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* Small Text Content Section - Bottom 3 Columns */}
+                        <div className="w-full mt-10 grid grid-cols-1 md:grid-cols-3 gap-8 pb-10">
+                            <div className="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm group hover:shadow-md transition-all">
+                                <div className="flex items-center gap-3 mb-4">
+                                    <div className="w-8 h-8 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center font-black text-xs">01</div>
+                                    <h4 className="text-[10px] font-black text-blue-400 uppercase tracking-[0.2em]">歷史人文 History</h4>
+                                </div>
+                                <p className="text-sm text-slate-600 font-bold leading-relaxed">{data.history}</p>
+                            </div>
+                            
+                            <div className="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm group hover:shadow-md transition-all text-left">
+                                <div className="flex items-center gap-3 mb-4">
+                                    <div className="w-8 h-8 bg-emerald-50 text-emerald-600 rounded-lg flex items-center justify-center font-black text-xs">02</div>
+                                    <h4 className="text-[10px] font-black text-emerald-400 uppercase tracking-[0.2em]">地理環境 Geography</h4>
+                                </div>
+                                <p className="text-sm text-slate-600 font-bold leading-relaxed">{data.geography}</p>
+                            </div>
+
+                            <div className="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm group hover:shadow-md transition-all text-left">
+                                <div className="flex items-center gap-3 mb-4">
+                                    <div className="w-8 h-8 bg-amber-50 text-amber-600 rounded-lg flex items-center justify-center font-black text-xs">03</div>
+                                    <h4 className="text-[10px] font-black text-amber-400 uppercase tracking-[0.2em]">文化特色 Culture</h4>
+                                </div>
+                                <p className="text-sm text-slate-600 font-bold leading-relaxed">{data.culture}</p>
+                            </div>
+                        </div>
+
+                    </main>
+
+                    <footer className="text-center py-12 text-slate-300 text-[10px] font-black uppercase tracking-[1em] opacity-40">
+                        Sun Moon Lake Runner Project · Cinema Interaction Mode · 2026
+                    </footer>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
