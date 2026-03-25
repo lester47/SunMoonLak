@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>日月潭互動劇院 - 效能優化版</title>
+    <!-- 載入核心函式庫 -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.3.7/mqtt.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap');
+        
+        body { 
+            font-family: 'Noto Sans TC', sans-serif; 
+            overflow-x: hidden; 
+            background-color: #020617; 
+            color: white;
+        }
+
+        /* 雙隊進度軌道 */
+        .progress-track { 
+            height: 24px; 
+            background: rgba(255, 255, 255, 0.05); 
+            border-radius: 99px; 
+            position: relative; 
+            overflow: hidden; 
+            border: 1px solid rgba(255, 255, 255, 0.1); 
+        }
+        .green-bar { height: 100%; background: linear-gradient(90deg, #10b981, #34d399); transition: width 0.8s cubic-bezier(0.34, 1.56, 0.64, 1); }
+        .red-bar { height: 100%; background: linear-gradient(90deg, #ef4444, #f87171); transition: width 0.8s cubic-bezier(0.34, 1.56, 0.64, 1); }
+
+        /* 劇院框架 */
+        .theater-frame { 
+            border: 12px solid #ffffff; 
+            border-radius: 4rem; 
+            box-shadow: 0 60px 150px -30px rgba(0, 0, 0, 1); 
+        }
+        .glass-panel { 
+            background: rgba(15, 23, 42, 0.8); 
+            backdrop-filter: blur(24px); 
+            border: 1px solid rgba(255, 255, 255, 0.1); 
+            border-radius: 3.5rem; 
+        }
+
+        /* 勝利動畫 */
+        @keyframes bounce-in { 0% { transform: scale(0.5); opacity: 0; } 70% { transform: scale(1.05); } 100% { transform: scale(1); opacity: 1; } }
+        .winner-modal { animation: bounce-in 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
+        
+        .transition-img { transition: opacity 1s ease-in-out, transform 1.2s ease-out; }
+        .status-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useMemo, useEffect, useRef } = React;
+
+        const TOTAL_SEGMENTS = 80;
+        const TOTAL_DISTANCE_KM = 29;
+        const SEGMENT_DISTANCE = TOTAL_DISTANCE_KM / TOTAL_SEGMENTS;
+
+        const MQTT_CONFIG = {
+            broker: "wss://mqttgo.io:8084/mqtt", 
+            topic: "sml/runner/progress",        
+            originalId: "MQTTGO-3125212715"      
+        };
+
+        const milestones = [
+            { id: 1, segment: 0, name: "01 慈恩塔 (起點)", image: "01-慈恩塔.jpg", history: "1971年完工，蔣公感念母恩興建。塔頂海拔剛好達1000公尺。", geography: "位於海拔954公尺的青龍山頂，塔高46公尺。可俯瞰全潭。", culture: "環湖競跑最具指標性的起點，象徵中華文化中的孝親精神。" },
+            { id: 2, segment: 5, name: "02 玄奘寺", image: "02.jpg", history: "1965年落成，奉安玄奘大師靈骨舍利。建築採仿唐式設計。", geography: "座落在青龍山半山腰，前臨潭水、後依群山，位置優越。", culture: "莊嚴肅穆。是跑者在陡坡後調整呼吸的重要休息點。" },
+            { id: 3, segment: 10, name: "03 玄光碼頭", image: "03-.jpg", history: "曾是暫存玄奘舍利的場所，現以「阿婆茶葉蛋」聞名全台。", geography: "位於日潭與月潭交界，可近距離觀看邵族聖地拉魯島。", culture: "碼頭旁的日月潭石碑是所有挑戰者必拍的地標。" },
+            { id: 4, segment: 15, name: "04 土亭仔步道口", image: "04.jpg", history: "邵族語意指很多土堆的地方，曾是邵族重要的聚落。", geography: "路徑兩側有茂密的森林。盡頭擁有全台最小、海拔最高燈桿。", culture: "入口的貓頭鷹石像是邵族守護神。充滿森林靜謐感。" },
+            { id: 5, segment: 20, name: "05 伊達邵碼頭", image: "05.jpg", history: "原名德化社，為邵族聚居中心。現為繁榮的文化商業核心。", geography: "潭區最大的平地聚落。是跑者路程 1/4 的重要補給站。", culture: "每年農曆八月舉行祖靈祭。建築充滿濃厚邵族圖騰風格。" },
+            { id: 6, segment: 25, name: "06 日月潭纜車站", image: "06.jpg", history: "2009年營運，連結日月潭與九族。注入現代化觀光動能。", geography: "跨越水社大山支脈。站體圓弧鋼構建築在山水間非常醒目。", culture: "彩色纜車象徵潭區四季變換，是科技與美景的交織。" },
+            { id: 7, segment: 30, name: "07 水蛙頭步道 (九蛙)", image: "07.jpg", history: "九蛙疊像由藝術家沈政瑩設計。現為全球關注的水位指標。", geography: "位於內湖仔灣內，是觀察潭水發電與水位變化的最佳窗口。", culture: "九蛙現身代表水情變化，是結合教育與觀光的成功標誌。" },
+            { id: 8, segment: 35, name: "08 大竹湖 (進水口)", image: "08.jpg", history: "日治時期修築引水隧道將濁水溪水引入，是重要工程遺跡。", geography: "潭水湧出處形成了湧泉，發展出豐富的溼地生態景觀。", culture: "見證日月潭從天然湖泊轉變為水利發電重鎮的歷史。" },
+            { id: 9, segment: 40, name: "09 文武廟", image: "09.jpg", history: "1969年重建為現今壯闊規模。紅色牌樓氣勢磅礡、華麗。", geography: "座落在潭北山腰，氣勢非凡。擁有著名的年梯步道。", culture: "路程過半！北朝宮廷式建築藝術是環湖最具震撼的地標。" },
+            { id: 10, segment: 45, name: "10 雲品/萬麗酒店一帶", image: "10.jpg", history: "日月潭北岸觀光重心。現代化高級酒店與寧靜湖景共存。", geography: "公路在此呈現平緩弧線，視野開闊。可遠眺南岸慈恩塔。", culture: "國際觀光接軌面貌。對跑者而言是放鬆的精華平路。" },
+            { id: 11, segment: 50, name: "11 朝霧碼頭", image: "11.jpg", history: "曾是重要水路中心。因清晨霧氣繚繞美景而得名。", geography: "面向東方，觀賞日出最佳點。也是泊船區最大的碼頭。", culture: "每年萬人橫渡下水點。象徵著挑戰自我的勇氣與精神。" },
+            { id: 12, segment: 55, name: "12 水社碼頭", image: "12.jpg", history: "最早開發的據點，也是環湖地區交通與服務最核心之處。", geography: "地勢平坦，飯店林立。是補給最完善、人潮最集中的區塊。", culture: "匯集潭區活力。跑者在此能獲得獲得最多加油鼓勵。" },
+            { id: 13, segment: 60, name: "13 向山遊客中心", image: "13.jpg", history: "由日本建築師團紀彥設計。清水模結構本身即是藝術品。", geography: "雙手環抱湖水的流線型設計。無邊際水池與藍天共構禪意。", culture: "路程達 3/4。現代美學與自然生態共存的經典地標。" },
+            { id: 14, segment: 65, name: "14 向山眺望平台", image: "14.jpg", history: "2014年啟用的懸臂式平台。透過創新鋼構延伸至湖心。", geography: "懸空湖面 10 公尺處。直對拉魯島，形成神聖的視覺軸線。", culture: "站在平台上如同站在湖中心。是與潭水深度對話的時刻。" },
+            { id: 15, segment: 70, name: "15 月牙灣 (月潭段)", image: "15.jpg", history: "相對寧靜的私房景點。展現迷人的半月型弧線與清澈潭水。", geography: "湖岸形狀如新月。車流極少，是划船與立槳愛好者的天堂。", culture: "遠離喧囂。在競跑後期，給予跑者最溫柔的心靈支持。" },
+            { id: 16, segment: 75, name: "16 頭社壩附近", image: "16.jpg", history: "區隔主潭與頭社盆地的重要堤壩。壩頂草皮綠意盎然。", geography: "地勢開闊，視野極佳。可同時欣賞潭面與集集大山美景。", culture: "最後一塊拼圖。看到這片美麗草坡，代表挑戰即將圓滿完成。" },
+            { id: 17, segment: 80, name: "17 回到起點 (終點)", image: "17.jpg", history: "完成環湖壯舉。最後回到慈恩塔下的台地，領取榮耀。", geography: "海拔 1000 公尺的終點線。全潭最寧靜、莊嚴的時刻。", culture: "堅持到底、永不放棄。恭喜你完成了這場精彩的競跑之旅！" }
+        ];
+
+        function App() {
+            const [greenProgress, setGreenProgress] = useState(0);
+            const [redProgress, setRedProgress] = useState(0);
+            const [mqttStatus, setMqttStatus] = useState("connecting");
+            const [showTools, setShowTools] = useState(false);
+            const [lastMsg, setLastMsg] = useState("-");
+            
+            // 效能優化核心：記錄最後一次處理過的訊息
+            const lastProcessedMsg = useRef("");
+            const mqttClient = useRef(null);
+
+            // MQTT 初始化與高效能數據處理
+            useEffect(() => {
+                const browserId = "TV-BROADCAST-" + Math.random().toString(16).substring(2, 6);
+                const client = window.mqtt.connect(MQTT_CONFIG.broker, {
+                    clientId: browserId, clean: true, connectTimeout: 5000, reconnectPeriod: 1000,
+                });
+
+                client.on("connect", () => {
+                    setMqttStatus("connected");
+                    client.subscribe(MQTT_CONFIG.topic);
+                });
+
+                client.on("message", (t, m) => {
+                    const raw = m.toString().trim();
+                    
+                    // --- 效能機制 1: 過濾重複數據 ---
+                    if (raw === lastProcessedMsg.current) return; 
+                    lastProcessedMsg.current = raw;
+                    
+                    setLastMsg(raw);
+                    
+                    // 解析 GG,RR
+                    if (raw.includes(',')) {
+                        const [gStr, rStr] = raw.split(',');
+                        const g = parseInt(gStr);
+                        const r = parseInt(rStr);
+                        if (!isNaN(g)) setGreenProgress(Math.min(80, Math.max(0, g)));
+                        if (!isNaN(r)) setRedProgress(Math.min(80, Math.max(0, r)));
+                    }
+                });
+
+                mqttClient.current = client;
+                return () => { if(mqttClient.current) mqttClient.current.end(); };
+            }, []);
+
+            const sendRaceTest = () => {
+                if (mqttClient.current && mqttStatus === 'connected') {
+                    const g = Math.floor(Math.random() * 81).toString().padStart(2, '0');
+                    const r = Math.floor(Math.random() * 81).toString().padStart(2, '0');
+                    mqttClient.current.publish(MQTT_CONFIG.topic, `${g},${r}`);
+                }
+            };
+
+            const leaderProgress = Math.max(greenProgress, redProgress);
+            const isGreenLeading = greenProgress > redProgress;
+            const isRedLeading = redProgress > greenProgress;
+            
+            const data = useMemo(() => {
+                const idx = Math.floor(leaderProgress / 5);
+                return milestones[idx] || milestones[milestones.length - 1];
+            }, [leaderProgress]);
+
+            const winnerTeam = useMemo(() => {
+                if (greenProgress >= 80) return { name: "綠隊 GREEN TEAM", color: "text-emerald-400", emoji: "🏆" };
+                if (redProgress >= 80) return { name: "紅隊 RED TEAM", color: "text-red-500", emoji: "🏆" };
+                return null;
+            }, [greenProgress, redProgress]);
+
+            return (
+                <div className="flex flex-col min-h-screen select-none bg-slate-950 text-left">
+                    
+                    {/* Header: 加大進度資訊 */}
+                    <header className="px-10 py-8 flex justify-between items-center bg-slate-900 shadow-2xl border-b border-white/10 sticky top-0 z-50">
+                        {/* 綠隊資訊 - 雙列大顯示 */}
+                        <div className={`flex flex-col items-center px-12 py-5 rounded-[2.5rem] border-4 transition-all duration-700 ${isGreenLeading ? 'border-emerald-500 bg-emerald-500/20 scale-110 shadow-[0_0_40px_rgba(16,185,129,0.4)]' : 'border-white/5 bg-white/5'}`}>
+                            <p className="text-sm font-black text-emerald-400 uppercase tracking-widest mb-1 italic">TEAM GREEN</p>
+                            <div className="flex flex-col items-center leading-none">
+                                <span className="text-8xl font-black italic">{greenProgress.toString().padStart(2, '0')} / 80</span>
+                                <span className="text-2xl font-bold opacity-30 mt-3">{(greenProgress * SEGMENT_DISTANCE).toFixed(1)} KM</span>
+                            </div>
+                        </div>
+
+                        {/* 中央標題 */}
+                        <div className="text-center px-10">
+                            <h1 className="text-5xl font-black tracking-tighter uppercase italic mb-2 text-white">日月潭環湖競賽</h1>
+                            <div className="flex items-center justify-center gap-3">
+                                <div className={`w-3 h-3 rounded-full ${mqttStatus === 'connected' ? 'bg-emerald-500 shadow-[0_0_15px_#10b981]' : 'bg-red-500 status-pulse'}`}></div>
+                                <p className="text-xs text-slate-500 font-bold uppercase tracking-[0.5em]">Live Race Broadcast</p>
+                            </div>
+                        </div>
+
+                        {/* 紅隊資訊 - 雙列大顯示 */}
+                        <div className={`flex flex-col items-center px-12 py-5 rounded-[2.5rem] border-4 transition-all duration-700 ${isRedLeading ? 'border-red-500 bg-red-500/20 scale-110 shadow-[0_0_40px_rgba(239,68,68,0.4)]' : 'border-white/5 bg-white/5'}`}>
+                            <p className="text-sm font-black text-red-500 uppercase tracking-widest mb-1 italic">TEAM RED</p>
+                            <div className="flex flex-col items-center leading-none">
+                                <span className="text-8xl font-black italic">{redProgress.toString().padStart(2, '0')} / 80</span>
+                                <span className="text-2xl font-bold opacity-30 mt-3">{(redProgress * SEGMENT_DISTANCE).toFixed(1)} KM</span>
+                            </div>
+                        </div>
+
+                        <button onClick={() => setShowTools(true)} className="absolute top-4 right-4 p-4 text-slate-700 hover:text-white transition-all hover:rotate-90">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                        </button>
+                    </header>
+
+                    <main className="flex-grow flex flex-col items-center px-12 md:px-24 py-10 w-full max-w-screen-2xl mx-auto overflow-hidden">
+                        
+                        {/* 偵錯面板 */}
+                        {showTools && (
+                            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/98 backdrop-blur-3xl p-10">
+                                <div className="glass-panel p-20 w-full max-w-5xl text-left relative overflow-hidden shadow-2xl">
+                                    <h2 className="text-7xl font-black mb-16 italic text-blue-400">中控偵錯中心</h2>
+                                    <div className="grid grid-cols-2 gap-16 mb-20 text-left">
+                                        <div className="space-y-10 text-left">
+                                            <div><p className="text-xl text-slate-500 font-black uppercase mb-2">MQTT Broker</p><p className="text-4xl font-mono text-white tracking-tighter">mqttgo.io</p></div>
+                                            <div><p className="text-xl text-slate-500 font-black uppercase mb-2">Monitor Topic</p><p className="text-4xl font-mono text-white italic">{MQTT_CONFIG.topic}</p></div>
+                                        </div>
+                                        <div className="bg-white/5 p-12 rounded-[3.5rem] border border-white/5 text-center flex flex-col justify-center">
+                                            <p className="text-xl text-emerald-500 font-black uppercase mb-6 tracking-widest text-center">實時原始數據 (RAW)</p>
+                                            <p className="text-8xl font-mono font-black text-white bg-slate-800 py-6 rounded-3xl shadow-inner text-center">{lastMsg}</p>
+                                        </div>
+                                    </div>
+                                    <div className="flex gap-10">
+                                        <button onClick={sendRaceTest} className="flex-grow bg-emerald-600 hover:bg-emerald-500 text-white p-12 rounded-[4rem] text-4xl font-black shadow-2xl transition-all active:scale-95 flex items-center justify-center gap-8">
+                                            發送模擬數據 (GG,RR)
+                                        </button>
+                                        <button onClick={() => setShowTools(false)} className="bg-white text-slate-950 px-24 rounded-[4rem] text-4xl font-black hover:bg-slate-200 transition-all active:scale-95">
+                                            返回轉播
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* 照片主區 - 調小後的標題尺寸 */}
+                        <div className="w-full relative aspect-[16/8.2] theater-frame overflow-hidden bg-slate-900 group">
+                            <img 
+                                key={data.image}
+                                src={data.image} 
+                                alt={data.name} 
+                                className="w-full h-full object-cover transition-img group-hover:scale-110"
+                                onError={(e) => { e.target.onerror = null; e.target.src = "01-慈恩塔.jpg"; }}
+                            />
+                            <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-transparent pointer-events-none" />
+                            
+                            {/* 領先狀態標籤 */}
+                            <div className="absolute top-10 left-10 flex gap-6">
+                                <div className={`px-10 py-4 rounded-3xl font-black text-2xl flex items-center gap-5 backdrop-blur-2xl border-2 ${isGreenLeading ? 'bg-emerald-600/80 border-emerald-400' : isRedLeading ? 'bg-red-600/80 border-red-400' : 'bg-slate-800/80 border-slate-500'}`}>
+                                    <div className={`w-4 h-4 rounded-full animate-ping ${isGreenLeading ? 'bg-emerald-300' : isRedLeading ? 'bg-red-300' : 'bg-white'}`}></div>
+                                    視角：{isGreenLeading ? '領先者 (綠隊)' : isRedLeading ? '領先者 (紅隊)' : '雙隊同行'}
+                                </div>
+                            </div>
+
+                            {/* 標題縮小：text-7xl (約 72px) */}
+                            <div className="absolute bottom-16 left-20 text-left text-white max-w-5xl">
+                                <div className="flex items-center gap-6 mb-10 text-left">
+                                    <span className="bg-blue-600 px-10 py-3 rounded-full text-2xl font-black uppercase tracking-[0.5em] shadow-2xl">POINT {data.id}</span>
+                                    <span className="bg-white/10 backdrop-blur-xl px-10 py-3 rounded-full text-2xl font-black tracking-widest border border-white/20 italic uppercase font-black tracking-tighter">Progress {(leaderProgress/80*100).toFixed(0)}%</span>
+                                </div>
+                                <h2 className="text-[7.5rem] font-black drop-shadow-2xl tracking-tighter leading-[0.9] italic mb-6 text-left">{data.name}</h2>
+                            </div>
+                        </div>
+
+                        {/* 雙進度條 */}
+                        <div className="w-full mt-12 glass-panel p-16 shadow-3xl text-left">
+                            <div className="flex flex-col gap-12 text-left">
+                                <div className="flex items-center gap-12 text-left">
+                                    <p className="text-4xl font-black text-emerald-400 w-80 italic tracking-tighter uppercase text-left">Team Green</p>
+                                    <div className="flex-grow progress-track">
+                                        <div className="green-bar shadow-[0_0_30px_#10b981]" style={{ width: (greenProgress/80)*100 + "%" }}></div>
+                                    </div>
+                                    <p className="text-5xl font-mono font-black text-emerald-300 w-32 text-center">{(greenProgress/80*100).toFixed(0)}%</p>
+                                </div>
+                                <div className="flex items-center gap-12 text-left">
+                                    <p className="text-4xl font-black text-red-500 w-80 italic tracking-tighter uppercase text-left">Team Red</p>
+                                    <div className="flex-grow progress-track">
+                                        <div className="red-bar shadow-[0_0_30px_#ef4444]" style={{ width: (redProgress/80)*100 + "%" }}></div>
+                                    </div>
+                                    <p className="text-5xl font-mono font-black text-red-400 w-32 text-center">{(redProgress/80*100).toFixed(0)}%</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* 底部巨大文字資訊 */}
+                        <div className="w-full mt-24 grid grid-cols-1 md:grid-cols-3 gap-16 pb-48 text-left animate-up">
+                            <div className="glass-panel p-16 border-l-[24px] border-blue-600 shadow-2xl transition-all hover:bg-blue-600/5 text-left font-black">
+                                <h4 className="text-2xl font-black text-blue-500 uppercase tracking-[0.5em] mb-12 flex items-center gap-6 italic">
+                                    <div className="w-6 h-6 bg-blue-500 rounded-full shadow-[0_0_20px_#3b82f6]"></div>
+                                    歷史背景 History
+                                </h4>
+                                <p className="text-5xl text-white font-bold leading-tight tracking-tighter decoration-blue-500/20 underline underline-offset-[20px] text-left">
+                                    {data.history}
+                                </p>
+                            </div>
+                            
+                            <div className="glass-panel p-16 border-l-[24px] border-emerald-500 shadow-2xl transition-all hover:bg-emerald-600/5 text-left text-left font-black">
+                                <h4 className="text-2xl font-black text-emerald-500 uppercase tracking-[0.5em] mb-12 flex items-center gap-6 italic text-left">
+                                    <div className="w-6 h-6 bg-emerald-500 rounded-full shadow-[0_0_20px_#10b981]"></div>
+                                    地理環境 Geography
+                                </h4>
+                                <p className="text-5xl text-white font-bold leading-tight tracking-tighter decoration-emerald-500/20 underline underline-offset-[20px] text-left">
+                                    {data.geography}
+                                </p>
+                            </div>
+
+                            <div className="glass-panel p-16 border-l-[24px] border-amber-500 shadow-2xl transition-all hover:bg-amber-600/5 text-left text-left font-black">
+                                <h4 className="text-2xl font-black text-amber-500 uppercase tracking-[0.5em] mb-12 flex items-center gap-6 italic text-left">
+                                    <div className="w-6 h-6 bg-amber-500 rounded-full shadow-[0_0_20px_#f59e0b]"></div>
+                                    文化特色 Culture
+                                </h4>
+                                <p className="text-5xl text-white font-bold leading-tight tracking-tighter decoration-amber-500/20 underline underline-offset-[20px] text-left">
+                                    {data.culture}
+                                </p>
+                            </div>
+                        </div>
+
+                    </main>
+
+                    {/* 冠軍祝賀全螢幕特效 */}
+                    {winnerTeam && (
+                        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-950/98 backdrop-blur-3xl p-12 text-center">
+                            <div className="winner-modal text-center p-32 rounded-[6rem] bg-slate-900 border-8 border-yellow-500/30 shadow-[0_0_200px_rgba(234,179,8,0.3)] relative overflow-hidden text-center font-black">
+                                <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(234,179,8,0.1),transparent)] animate-pulse"></div>
+                                <div className="text-[25rem] font-black leading-none mb-16 drop-shadow-[0_0_50px_rgba(255,255,255,0.5)] text-center">🏆</div>
+                                <h3 className="text-8xl font-black text-yellow-500 uppercase tracking-[1.5em] mb-16 italic text-center text-center">Victory</h3>
+                                <h2 className={`text-[13rem] font-black tracking-tighter leading-none mb-24 ${winnerTeam.color} text-center`}>{winnerTeam.emoji} {winnerTeam.name}</h2>
+                                <button 
+                                    onClick={() => { setGreenProgress(0); setRedProgress(0); }} 
+                                    className="relative z-10 bg-yellow-500 text-slate-950 px-40 py-16 rounded-[5rem] text-6xl font-black hover:bg-yellow-400 transition-all active:scale-95 shadow-[0_30px_70px_rgba(234,179,8,0.5)] mx-auto block"
+                                >
+                                    RESET RACE
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    <footer className="text-center py-24 text-slate-800 text-sm font-black uppercase tracking-[3.5em] opacity-30 bg-slate-950 text-center">
+                        Sun Moon Lake Race · Team Broadcast Mode · System Fixed Edition
+                    </footer>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
