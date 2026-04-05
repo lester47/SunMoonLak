@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>日月潭互動劇院 - 雙隊勝利音效版</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.3.7/mqtt.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap');
+        
+        body { 
+            font-family: 'Noto Sans TC', sans-serif; 
+            overflow-x: hidden; 
+            background-color: #020617; 
+            color: white;
+        }
+
+        .progress-track { 
+            height: 32px; 
+            background: rgba(255, 255, 255, 0.05); 
+            border-radius: 99px; 
+            position: relative; 
+            overflow: hidden; 
+            border: 1px solid rgba(255, 255, 255, 0.1); 
+        }
+        .green-bar { height: 100%; background: linear-gradient(90deg, #10b981, #34d399); transition: width 0.8s cubic-bezier(0.34, 1.56, 0.64, 1); box-shadow: 0 0 20px rgba(16, 185, 129, 0.5); }
+        .red-bar { height: 100%; background: linear-gradient(90deg, #ef4444, #f87171); transition: width 0.8s cubic-bezier(0.34, 1.56, 0.64, 1); box-shadow: 0 0 20px rgba(239, 68, 68, 0.5); }
+
+        .theater-frame { 
+            border: 12px solid #ffffff; 
+            border-radius: 4rem; 
+            box-shadow: 0 60px 150px -30px rgba(0, 0, 0, 1); 
+        }
+        .glass-panel { 
+            background: rgba(15, 23, 42, 0.8); 
+            backdrop-filter: blur(24px); 
+            border: 1px solid rgba(255, 255, 255, 0.1); 
+            border-radius: 3.5rem; 
+        }
+
+        @keyframes bounce-in { 0% { transform: scale(0.5); opacity: 0; } 70% { transform: scale(1.05); } 100% { transform: scale(1); opacity: 1; } }
+        .winner-modal { animation: bounce-in 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useMemo, useEffect, useRef } = React;
+
+        // --- 音樂路徑設定：請確保資料夾內有這三個檔案 ---
+        const AUDIO_ASSETS = {
+            bgm: "./bgm.mp3",
+            redWin: "./redwin.mp3",   // 紅隊獲勝音檔
+            greenWin: "./greenwin.mp3" // 綠隊獲勝音檔
+        };
+
+        const TOTAL_SEGMENTS = 80;
+        const milestones = [
+            { id: 1, segment: 0, name: "01 慈恩塔 (起點)", image: "01-慈恩塔.jpg" },
+            { id: 2, segment: 5, name: "02 玄奘寺", image: "02.jpg" },
+            { id: 3, segment: 10, name: "03 玄光碼頭", image: "03-.jpg" },
+            { id: 4, segment: 15, name: "04 土亭仔步道口", image: "04.jpg" },
+            { id: 5, segment: 20, name: "05 伊達邵碼頭", image: "05.jpg" },
+            { id: 6, segment: 25, name: "06 日月潭纜車站", image: "06.jpg" },
+            { id: 7, segment: 30, name: "07 水蛙頭步道 (九蛙)", image: "07.jpg" },
+            { id: 8, segment: 35, name: "08 大竹湖 (進水口)", image: "08.jpg" },
+            { id: 9, segment: 40, name: "09 文武廟", image: "09.jpg" },
+            { id: 10, segment: 45, name: "10 雲品/萬麗酒店一帶", image: "10.jpg" },
+            { id: 11, segment: 50, name: "11 朝霧碼頭", image: "11.jpg" },
+            { id: 12, segment: 55, name: "12 水社碼頭", image: "12.jpg" },
+            { id: 13, segment: 60, name: "13 向山遊客中心", image: "13.jpg" },
+            { id: 14, segment: 65, name: "14 向山眺望平台", image: "14.jpg" },
+            { id: 15, segment: 70, name: "15 月牙灣 (月潭段)", image: "15.jpg" },
+            { id: 16, segment: 75, name: "16 頭社壩附近", image: "16.jpg" },
+            { id: 17, segment: 80, name: "17 回到起點 (終點)", image: "17.jpg" }
+        ];
+
+        function App() {
+            const [greenProgress, setGreenProgress] = useState(0);
+            const [redProgress, setRedProgress] = useState(0);
+            const [mqttStatus, setMqttStatus] = useState("connecting");
+            const [showTools, setShowTools] = useState(false);
+            
+            const mqttClient = useRef(null);
+            const bgmAudio = useRef(new Audio(AUDIO_ASSETS.bgm));
+            const redWinAudio = useRef(new Audio(AUDIO_ASSETS.redWin));
+            const greenWinAudio = useRef(new Audio(AUDIO_ASSETS.greenWin));
+
+            // 初始化音訊設定
+            useEffect(() => {
+                bgmAudio.current.loop = true;
+                bgmAudio.current.volume = 0.5;
+                redWinAudio.current.volume = 0.9;
+                greenWinAudio.current.volume = 0.9;
+                return () => {
+                    bgmAudio.current.pause();
+                    redWinAudio.current.pause();
+                    greenWinAudio.current.pause();
+                };
+            }, []);
+
+            // MQTT 連線
+            useEffect(() => {
+                const client = window.mqtt.connect("wss://mqttgo.io:8084/mqtt", { clean: true });
+                client.on("connect", () => { 
+                    setMqttStatus("connected"); 
+                    client.subscribe("sml/runner/progress"); 
+                });
+                client.on("message", (t, m) => {
+                    const raw = m.toString().trim();
+                    if (raw.includes(',')) {
+                        const [g, r] = raw.split(',').map(Number);
+                        if (!isNaN(g)) setGreenProgress(Math.min(80, g));
+                        if (!isNaN(r)) setRedProgress(Math.min(80, r));
+                    }
+                });
+                mqttClient.current = client;
+                return () => client.end();
+            }, []);
+
+            // --- 核心音樂切換邏輯 ---
+            useEffect(() => {
+                const isGreenWin = greenProgress >= 80;
+                const isRedWin = redProgress >= 80;
+                const isGameOver = isGreenWin || isRedWin;
+                const isGameActive = (greenProgress > 0 || redProgress > 0) && !isGameOver;
+
+                if (isGameOver) {
+                    bgmAudio.current.pause();
+                    // 根據勝者播放對應音檔
+                    if (isGreenWin && greenWinAudio.current.paused) {
+                        greenWinAudio.current.currentTime = 0;
+                        greenWinAudio.current.play().catch(() => {});
+                    } else if (isRedWin && redWinAudio.current.paused) {
+                        redWinAudio.current.currentTime = 0;
+                        redWinAudio.current.play().catch(() => {});
+                    }
+                } else if (isGameActive) {
+                    redWinAudio.current.pause();
+                    greenWinAudio.current.pause();
+                    if (bgmAudio.current.paused) {
+                        bgmAudio.current.play().catch(() => {});
+                    }
+                } else {
+                    // Reset 狀態 (0,0)
+                    bgmAudio.current.pause();
+                    bgmAudio.current.currentTime = 0;
+                    redWinAudio.current.pause();
+                    greenWinAudio.current.pause();
+                }
+            }, [greenProgress, redProgress]);
+
+            const leaderProgress = Math.max(greenProgress, redProgress);
+            const data = milestones[Math.floor(leaderProgress / 5)] || milestones[16];
+            const winnerTeam = greenProgress >= 80 ? { name: "綠隊", color: "text-emerald-400" } : redProgress >= 80 ? { name: "紅隊", color: "text-red-500" } : null;
+
+            return (
+                <div className="flex flex-col min-h-screen bg-slate-950 text-left" onClick={() => bgmAudio.current.play().catch(()=>{})}>
+                    
+                    <header className="px-10 py-8 flex justify-between items-center bg-slate-900 border-b border-white/10 sticky top-0 z-50">
+                        <div className={`flex flex-col items-center px-12 py-5 rounded-[2.5rem] bg-white/5 border-2 ${greenProgress > redProgress ? 'border-emerald-500 shadow-[0_0_30px_rgba(16,185,129,0.3)]' : 'border-transparent'}`}>
+                            <p className="text-emerald-400 font-black italic text-xl">TEAM GREEN</p>
+                            <span className="text-8xl font-black italic">{greenProgress} / 80</span>
+                        </div>
+                        
+                        <div className="text-center">
+                            <h1 className="text-6xl font-black italic tracking-tighter">日月潭環湖競賽</h1>
+                            <div className="flex items-center justify-center gap-3 mt-2">
+                                <div className={`w-3 h-3 rounded-full ${mqttStatus === 'connected' ? 'bg-emerald-500' : 'bg-red-500 animate-pulse'}`}></div>
+                                <p className="text-sm text-slate-500 font-bold uppercase tracking-widest">Live Race Broadcast</p>
+                            </div>
+                        </div>
+
+                        <div className={`flex flex-col items-center px-12 py-5 rounded-[2.5rem] bg-white/5 border-2 ${redProgress > greenProgress ? 'border-red-500 shadow-[0_0_30px_rgba(239,68,68,0.3)]' : 'border-transparent'}`}>
+                            <p className="text-red-500 font-black italic text-xl">TEAM RED</p>
+                            <span className="text-8xl font-black italic">{redProgress} / 80</span>
+                        </div>
+
+                        <button onClick={(e) => { e.stopPropagation(); setShowTools(true); }} className="absolute top-4 right-4 p-4 text-slate-700 hover:text-white transition-all">⚙️</button>
+                    </header>
+
+                    <main className="flex-grow flex flex-col items-center px-12 py-10 w-full max-w-screen-2xl mx-auto">
+                        
+                        {showTools && (
+                            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-xl">
+                                <div className="glass-panel p-20 text-center border border-white/10">
+                                    <h2 className="text-5xl font-black mb-10 text-blue-400 italic">系統中控台</h2>
+                                    <div className="flex flex-col gap-6">
+                                        <button onClick={() => { mqttClient.current.publish("sml/runner/progress", "80,75"); }} className="bg-emerald-600 p-8 rounded-3xl text-2xl font-black">測試綠隊獲勝 (播放 greenwin.mp3)</button>
+                                        <button onClick={() => { mqttClient.current.publish("sml/runner/progress", "75,80"); }} className="bg-red-600 p-8 rounded-3xl text-2xl font-black">測試紅隊獲勝 (播放 redwin.mp3)</button>
+                                        <button onClick={() => setShowTools(false)} className="bg-white text-black p-6 rounded-3xl text-2xl font-black">返回轉播</button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="w-full relative aspect-[16/8.5] theater-frame overflow-hidden bg-slate-900">
+                            <img key={data.image} src={data.image} className="w-full h-full object-cover transition-opacity duration-700" onError={(e) => { e.target.src="01-慈恩塔.jpg"; }} />
+                            <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent" />
+                            <div className="absolute bottom-16 left-20">
+                                <h2 className="text-[8.5rem] font-black italic leading-[0.85]">{data.name}</h2>
+                            </div>
+                        </div>
+
+                        <div className="w-full mt-12 glass-panel p-16">
+                            <div className="flex flex-col gap-12">
+                                <div className="flex items-center gap-10">
+                                    <p className="text-4xl font-black text-emerald-400 w-64 italic">Team Green</p>
+                                    <div className="flex-grow progress-track">
+                                        <div className="green-bar" style={{ width: (greenProgress/80)*100 + "%" }}></div>
+                                    </div>
+                                    <p className="text-4xl font-mono font-black text-emerald-400 w-24">{(greenProgress/80*100).toFixed(0)}%</p>
+                                </div>
+                                <div className="flex items-center gap-10">
+                                    <p className="text-4xl font-black text-red-500 w-64 italic">Team Red</p>
+                                    <div className="flex-grow progress-track">
+                                        <div className="red-bar" style={{ width: (redProgress/80)*100 + "%" }}></div>
+                                    </div>
+                                    <p className="text-4xl font-mono font-black text-red-500 w-24">{(redProgress/80*100).toFixed(0)}%</p>
+                                </div>
+                            </div>
+                        </div>
+                    </main>
+
+                    {winnerTeam && (
+                        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/95 backdrop-blur-3xl">
+                            <div className="winner-modal text-center p-24 rounded-[5rem] border-8 border-yellow-500/20 shadow-[0_0_150px_rgba(234,179,8,0.2)]">
+                                <div className="text-[18rem] leading-none mb-10 animate-bounce">🏆</div>
+                                <h2 className={`text-[12rem] font-black mb-16 italic tracking-tighter leading-none ${winnerTeam.color}`}>{winnerTeam.name} 勝利！</h2>
+                                <button 
+                                    onClick={() => { 
+                                        setGreenProgress(0); 
+                                        setRedProgress(0); 
+                                        redWinAudio.current.pause();
+                                        greenWinAudio.current.pause();
+                                    }} 
+                                    className="bg-yellow-500 hover:bg-yellow-400 text-black px-32 py-12 rounded-full text-6xl font-black shadow-2xl transition-transform active:scale-95"
+                                >
+                                    REPLAY RACE
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    <footer className="text-center py-12 text-slate-800 text-sm font-black uppercase tracking-[2em] opacity-30">
+                        Sun Moon Lake Interactive Theater · Winner-Specific Audio Edition
+                    </footer>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
