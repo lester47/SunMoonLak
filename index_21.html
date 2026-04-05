@@ -30,10 +30,10 @@
     <script type="text/babel">
         const { useState, useMemo, useEffect, useRef } = React;
 
-        // --- 音樂資源設定 ---
+       // --- 修改後的音效路徑：直接讀取同資料夾檔案 ---
         const AUDIO_ASSETS = {
-            bgm: "https://actions.google.com/sounds/v1/science_fiction/glitchy_digital_opening.ogg", 
-            victory: "https://actions.google.com/sounds/v1/human_voices/applause_clapping_and_cheering.ogg" 
+            bgm: "bgm.mp3",    // 請確保資料夾裡有這個檔名的檔案
+            victory: "win.mp3" // 請確保資料夾裡有這個檔名的檔案
         };
 
         const TOTAL_SEGMENTS = 80;
